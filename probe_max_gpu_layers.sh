@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/probe_max_gpu_layers.sh --model <path> [options]
+  probe_max_gpu_layers.sh --model <path> [options]
 
 Universal GPU-layer probe for llama.cpp models.
 Works with:
@@ -41,11 +41,11 @@ Options:
   -h, --help                Show this help
 
 Examples:
-  scripts/probe_max_gpu_layers.sh \
+  probe_max_gpu_layers.sh \
     --model /hf-cache/models--Qwen--Qwen3-Coder-Next-GGUF/.../Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf \
     --max auto --hard-max 120 --ctx-size 1024 --n-predict 8
 
-  scripts/probe_max_gpu_layers.sh \
+  probe_max_gpu_layers.sh \
     --backend local \
     --llama-cli /usr/local/bin/llama-cli \
     --model /models/foo.gguf \
