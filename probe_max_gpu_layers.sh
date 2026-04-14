@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  probe_max_gpu_layers.sh --model <path> [options]
+  scripts/probe_max_gpu_layers.sh --model <path> [options]
 
 Universal GPU-layer probe for llama.cpp models.
 Works with:
@@ -41,11 +41,11 @@ Options:
   -h, --help                Show this help
 
 Examples:
-  probe_max_gpu_layers.sh \
+  scripts/probe_max_gpu_layers.sh \
     --model /hf-cache/models--Qwen--Qwen3-Coder-Next-GGUF/.../Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf \
     --max auto --hard-max 120 --ctx-size 1024 --n-predict 8
 
-  probe_max_gpu_layers.sh \
+  scripts/probe_max_gpu_layers.sh \
     --backend local \
     --llama-cli /usr/local/bin/llama-cli \
     --model /models/foo.gguf \
@@ -154,14 +154,31 @@ run_probe_once() {
     docker_args=(docker run --rm --gpus all --entrypoint llama-cli)
 
     if [ -f "$MODEL" ]; then
-      local host_model
-      host_model="$(readlink -f "$MODEL")"
-      local host_model_dir
-      host_model_dir="$(dirname "$host_model")"
-      local host_model_base
-      host_model_base="$(basename "$host_model")"
+      # Resolve the directory to an absolute path WITHOUT following the filename
+      # through symlinks — this preserves logical shard names (e.g. 00001-of-00004)
+      # rather than resolving to opaque blob hashes.
+      local host_model_dir host_model_base
+      host_model_dir="$(cd "$(dirname "$MODEL")" && pwd)"
+      host_model_base="$(basename "$MODEL")"
       docker_args+=(-v "$host_model_dir:/model-input:ro")
       model_in_container="/model-input/${host_model_base}"
+
+      # If any .gguf shards are symlinks whose targets live outside host_model_dir
+      # (e.g. HF blob cache), mount those target directories too so the symlinks
+      # resolve correctly inside the container.
+      local -A _extra_mounts
+      for _shard in "$host_model_dir"/*.gguf; do
+        [ -L "$_shard" ] || continue
+        local _target _tdir
+        _target="$(readlink -f "$_shard")"
+        _tdir="$(dirname "$_target")"
+        if [ "$_tdir" != "$host_model_dir" ]; then
+          _extra_mounts["$_tdir"]=1
+        fi
+      done
+      for _tdir in "${!_extra_mounts[@]}"; do
+        docker_args+=(-v "$_tdir:$_tdir:ro")
+      done
     else
       docker_args+=(-v "$HF_CACHE_DIR:/hf-cache:ro")
     fi
@@ -188,16 +205,25 @@ run_probe_once() {
     set -e
   fi
 
+  # llama-server exits 0 even on OOM / model-load failure.
+  # Check the output for well-known failure strings so those are not
+  # misclassified as a pass.
+  if [ "$rc" -eq 0 ]; then
+    if grep -qiE "cudaMalloc failed|out of memory|failed to allocate CUDA|unable to allocate CUDA|Failed to load the model|failed to load model" "$out_file"; then
+      rc=1
+    fi
+  fi
+
   return "$rc"
 }
 
 classify_failure() {
   local out_file="$1"
-  if rg -qi "cudaMalloc failed|out of memory|failed to allocate CUDA|unable to allocate CUDA|Failed to load the model" "$out_file"; then
+  if grep -qiE "cudaMalloc failed|out of memory|failed to allocate CUDA|unable to allocate CUDA|Failed to load the model" "$out_file"; then
     echo "oom_or_load_fail"
-  elif rg -qi "forward compatibility was attempted on non supported HW|no usable GPU found|failed to initialize CUDA|invalid device function" "$out_file"; then
+  elif grep -qiE "forward compatibility was attempted on non supported HW|no usable GPU found|failed to initialize CUDA|invalid device function" "$out_file"; then
     echo "gpu_runtime_error"
-  elif rg -qi "timed out|timeout" "$out_file"; then
+  elif grep -qiE "timed out|timeout" "$out_file"; then
     echo "timeout"
   else
     echo "other_error"
@@ -216,11 +242,16 @@ probe_ngl() {
   local reason=""
 
   while [ "$attempt" -le "$RETRIES" ]; do
-    if run_probe_once "$ngl" "$out_file"; then
-      rc=0
+    # Capture run_probe_once's exit code directly — do NOT use $? after
+    # an if/fi with no else branch; bash sets $? to 0 in that case even
+    # when the condition command failed.
+    set +e
+    run_probe_once "$ngl" "$out_file"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then
       break
     fi
-    rc=$?
     attempt=$((attempt + 1))
   done
 
@@ -231,7 +262,7 @@ probe_ngl() {
     if [ "$VERBOSE" -eq 1 ]; then
       tail -n 30 "$out_file" | sed 's/^/  /'
     else
-      rg -n "Prompt:|Generation:|memory breakdown|Exiting" "$out_file" | tail -n 5 | sed 's/^/  /' || true
+      grep -nE "Prompt:|Generation:|memory breakdown|Exiting" "$out_file" | tail -n 5 | sed 's/^/  /' || true
     fi
     return 0
   fi
@@ -240,7 +271,7 @@ probe_ngl() {
   STATUS[$ngl]=1
   REASON[$ngl]="$reason"
   echo "FAIL ngl=$ngl rc=$rc reason=$reason"
-  rg -n "cudaMalloc failed|out of memory|failed to load model|Failed to load the model|forward compatibility|no usable GPU|failed to initialize CUDA|invalid device function" "$out_file" | head -n 8 | sed 's/^/  /' || true
+  grep -nE "cudaMalloc failed|out of memory|failed to load model|Failed to load the model|forward compatibility|no usable GPU|failed to initialize CUDA|invalid device function" "$out_file" | head -n 8 | sed 's/^/  /' || true
   return 1
 }
 
