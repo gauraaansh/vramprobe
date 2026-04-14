@@ -10,14 +10,14 @@ Universal `llama.cpp` GPU-layer probe script to find the highest stable `--n-gpu
 - Optional JSON summary output.
 
 ## File
-- Script: `scripts/probe_max_gpu_layers.sh`
+- Script: `probe_max_gpu_layers.sh`
 
 ## Quick start (Docker)
 ```bash
 cd /path/to/your/repo
 chmod +x scripts/probe_max_gpu_layers.sh
 
-scripts/probe_max_gpu_layers.sh \
+probe_max_gpu_layers.sh \
   --model /hf-cache/models--ORG--MODEL/snapshots/<SNAPSHOT>/model.gguf \
   --backend docker \
   --max auto \
@@ -31,7 +31,7 @@ scripts/probe_max_gpu_layers.sh \
 
 ## Quick start (Local llama-cli)
 ```bash
-scripts/probe_max_gpu_layers.sh \
+probe_max_gpu_layers.sh \
   --backend local \
   --llama-cli /usr/local/bin/llama-cli \
   --model /models/model.gguf \
@@ -55,4 +55,4 @@ RESULT:
 ```
 
 ## License
-MIT. See `scripts/LICENSE_probe_max_gpu_layers_MIT`.
+MIT. See `LICENSE`.
